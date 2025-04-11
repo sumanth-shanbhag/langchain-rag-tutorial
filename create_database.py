@@ -5,6 +5,7 @@ from langchain.schema import Document
 # from langchain.embeddings import OpenAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
+from langchain_community.embeddings import HuggingFaceEmbeddings
 import openai 
 from dotenv import load_dotenv
 import os
@@ -15,10 +16,10 @@ load_dotenv()
 #---- Set OpenAI API key 
 # Change environment variable name from "OPENAI_API_KEY" to the name given in 
 # your .env file.
-openai.api_key = os.environ['OPENAI_API_KEY']
+# openai.api_key = os.environ['OPENAI_API_KEY']
 
 CHROMA_PATH = "chroma"
-DATA_PATH = "data/books"
+DATA_PATH = "data/books/twitter"
 
 
 def main():
@@ -60,8 +61,14 @@ def save_to_chroma(chunks: list[Document]):
         shutil.rmtree(CHROMA_PATH)
 
     # Create a new DB from the documents.
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    """
     db = Chroma.from_documents(
         chunks, OpenAIEmbeddings(), persist_directory=CHROMA_PATH
+    )
+    """
+    db = Chroma.from_documents(
+        chunks, embeddings, persist_directory=CHROMA_PATH
     )
     db.persist()
     print(f"Saved {len(chunks)} chunks to {CHROMA_PATH}.")

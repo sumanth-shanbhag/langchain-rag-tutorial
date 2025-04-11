@@ -1,0 +1,699 @@
+# Converted from PDF
+
+Twitter Sparrow : Reduce Event Pipeline latency
+from hours to seconds
+
+Lohit VijayaRenu, Zhenzhao Wang, Praveen Killamsetti, Tisha Emmanuel, Abhishek Jagannath,
+Lakshman Ganesh Rajamani and Joep Rottinghuis
+Twitter, Inc
+Email: lohit, zhenzhaow, pkillamsetti, temmanuel, ajagannath, lrajamani, joep @twitter.com
+
+Abstract—Data Analytics at Twitter rely on trillions of events
+generated daily by micro services backing the Twitter platform.
+Multiple features on Twitter Mobile Application and Web inter-
+face are backed by micro services which emit events triggered
+by user actions. Events are well deﬁned structured objects with
+ﬁelds containing important information relevant to the feature
+it represents. These events are aggregated and processed before
+making it available for internal consumption at various storage
+systems. Event processing pipelines in the past were designed to
+support scale in the order of billions of events per minutegit  [1].
+Events ﬂowing through various software systems were batched
+to optimize for throughput in favor of latency. These batched
+event pipelines observe an end to end latency of a few hours,
+from the time when the event is emitted to when it is ready to be
+consumed. Project Sparrow is redesigning this pipeline to reduce
+the event latency from hours to seconds (or minutes).
+
+Index Terms—real time analytics, streaming event pipeline,
+event aggregation, event processing, large scale event infrastruc-
+ture
+
+I. INTRODUCTION
+
+Millions of users interact and connect with Twitter on
+mobile applications, websites and APIs. Their interaction
+with various Twitter features capture important interactions.
+Thousands of instances of micro services backing Twitter
+features from across the globe generate events and stream
+them to the Twitter event log pipeline. Event aggregation
+and processing framework handle billions of events per
+minute with data volume of tens of terabytes per minute.
+To be able to handle the scale, all the events are batched
+into event log ﬁles on an hourly time window and stored at
+a durable storage system such as Hadoop Distributed File
+System [2]. These event
+log ﬁles are then loaded into a
+data warehouse or data lake for analytics. Data Engineers,
+Software Engineers and Data Analysts (henceforth referred
+to as Twitter Engineers) at Twitter have to wait a few
+hours until the events are available for their consumption.
+Project Sparrow has revamped this pipeline by converting all
+the components of the pipeline to adopt streaming capabilities.
+
+Twitter Engineers have a requirement
+
+to run ad-hoc
+analytical queries on streaming events combined with historic
+events. This is different from executing a stream computing
+pipeline [3]. Stream computing pipelines are typically pre
+built
+topologies which execute on a stream of incoming
+events [4], [5]. Many of the analytical queries have a need to
+execute ad-hoc queries on different ﬁelds of the datasets and
+
+across different time ranges. These queries can be tuned to
+peek at data arriving in the past few minutes or scan the data
+spanning several days or months. Project sparrow enables this
+by taking advantage of many features exposed by different
+components of the pipeline.
+
+In the architecture section we describe the batch pipeline
+and compare it with the streaming architecture of Sparrow.
+We deep dive into different parts of systems in the components
+section. User experience section describes the advantages of
+using Sparrow. Latency section deep dive into aspects of
+scaling and challenges we had to overcome. Rest of sections
+describe monitoring and failure recovery.
+
+II. ARCHITECTURE
+
+Below we describe the architecture behind Event pipelines.
+As mentioned already,
+tens of thousands of microservices
+spread across different data centers generate events based on
+how users interact with the Twitter platform globally. Some
+examples include website trafﬁc patterns, user behavior, ad
+server statistics, Twitter timeline interaction and more. Events
+are usually categorized based on the use case, which are
+eventually aggregated as datasets for analytics. Below we
+describe both the batched pipeline and sparrow streaming
+pipeline. Figure 1 highlights the event latency of batch and
+streaming architecture. Note the Time T at which events are
+generated vs Time T + Latency when they are made available
+for consumption in different data stores for Twitter engineers.
+
+Fig. 1. Batch vs Streaming Architecture
+
+A. Batch Event Pipeline
+
+Batched pipelines to support analytics on events have
+evolved over several years at Twitter. Analytics support was
+built on a standard stack of distributed storage and compute
+platforms [6]. Microservices emit events to a Batch Event
+Aggregation layer, which group related events and write them
+as event log ﬁles on Hadoop Distributed File System. Events
+are usually written to a well deﬁned directory hierarchy with
+structure such as datasetName/YYYY/MM/DD/HH, so that all
+events generated by thousands of microservices for a dataset
+these
+are accumulated in a hourly partition. Many times,
+event log ﬁles are processed for event correctness or format
+conversion and written back into the same hourly partitioned
+directories by a Batch Event Processor. These hourly event
+log ﬁles are then loaded into various analytics platforms such
+as Apache HIVE [7] or Apache Presto [8]. Event log ﬁles are
+also available for data processing using Scalding [9]. Event
+logs ﬁles are usually in the order of tens of petabytes of data
+per day. Because of the data scale, batched pipelines were ﬁne
+tuned for high throughput [10]. Our existing pipelines process
+billions of events per minute with data volumes of tens of
+petabytes every minute [11]. As seen in Figure 1, batched
+pipeline events are moved from one stage of the pipeline to
+another in an hourly batch thus introducing an end to end
+latency of a few hours for Twitter engineers.
+It should also be noted that, when these batched pipelines were
+built there was limited support for handling large volumes
+of data by any stream processing framework. Additionally,
+not many data warehouses or data lakes supported stream-
+ing inserts at scale. Stream processing frameworks were not
+optimized for high throughput. Batch pipelines have already
+powered many features of Twitter platform. As the underlying
+components evolved we set out to take advantage of the new
+capabilities to build Sparrow streaming pipeline.
+
+B. Streaming Event Pipeline
+
+the
+
+As part of modernizing the pipeline with the goal of
+reducing end to end latency, we revisited all components
+of
+approach.
+system and adopted streaming ﬁrst
+Microservices would continue to emit events as they did
+earlier, but those events were then forwarded to a Streaming
+Event Aggregation layer which queued the messages to a
+message queue such as Kafka [12] or Google PubSub [13].
+Streaming Event Processing framework using Apache Beam
+with different runner support [14] was used to read events
+from the message queue, process to apply transformation or
+format conversion before inserting the events to a downstream
+storage system. Storage solutions such as Google BigQuery
+[15], Apache Druid [16], Google Cloud storage [17] and
+Amplitude [18] all allow streaming or micro batch inserts.
+Streaming Event Processor
+jobs insert events into these
+systems to enable analytics in real time. We have noticed
+an end to end latency reduced from hours to seconds (or
+minutes). Below we describe different components of Sparrow
+in detail.
+
+Figure 2 shows the difference in end to end latency we
+observe for a dataset which is delivered by both batch event
+pipeline and sparrow streaming pipeline. The Y-axis is shown
+in a logarithmic scale where the streaming pipeline latency
+is usually in the order of seconds, while the batch pipelines
+exhibit a step function with latency of a few hours.
+
+Fig. 2. Dataset latency for Batch vs Streaming
+
+III. SPARROW COMPONENTS
+
+This section describes the overall architectural components
+of Sparrow streaming pipeline. Figure 3 show the components
+and how they interact with each other. Events generated by
+micro services ﬂow as a stream to their conﬁgured data
+destinations.
+
+Fig. 3. Sparrow Components
+
+A. Uniﬁed Client Library
+
+Microservices are exposed to a client
+
+library which is
+included as part of their dependency tree. Few ﬂags controll
+the mode of redirecting events to either batched pipeline
+or new Sparrow streaming pipeline. Additionally, clients can
+also capture important metrics such as event generation time,
+event emit count, event drop count, event size and dataset
+speciﬁc properties. Optionally clients can also perform basic
+data validation for schema mismatch or malformed data blobs
+which could potentially corrupt the event stream pipeline.
+Conﬁurable ﬂags enable us to test or migrate a subset of
+microservices to new pipelines without disrupting production
+pipelines. Uniﬁed client libraries provide a consistent interface
+and in many ways a transparent mechanism to emit events
+without the need to recompile or redeploy microservices.
+
+B. Event Aggregation
+
+All events emitted by microservices are tagged with a
+name which is used to identify the datasets they belong to.
+Twitter Streaming Event aggregation framework is a highly
+scalable and fault tolerant service which can handle large event
+counts, event size and number of microservices clients. Event
+aggregation framework is an optimized version of open source
+software, Apache Flume [19]. Events are streamed from client
+to a set of server instances distributed across many machines.
+Aggregation layer can redirect events to different downstream
+destinations either on premise or cloud environments. In cases
+where events are streamed to Google PubSub, the Aggre-
+gation layer provides a way to control which services are
+exposed to external networks instead of providing out of data
+center connectivity to all microservices. Event aggregation
+framework can scale aggregation on a per dataset level which
+enables it to provide data tier support and well deﬁned quality
+of service for each data tier. Important event datasets are
+classiﬁed with higher tiers which can scale up and down based
+on the event count at any point in time. Figure 4 shows an
+example of a different aggregator instance accumulating events
+from multiple micro services. MicroService A, B and C are
+supported by Aggregator-Group 1, while MicroService D is
+supported by Aggregator-Group 2. Aggregation framework
+can scale up or down each Aggregator-group independent
+of others. This becomes very important for platforms like
+Twitter which can have burst trafﬁc patterns on both scheduled
+events (new year, sporting events, ...) or unscheduled events
+(natural disaster, social events, viral conversations,). Twitter
+also replicates this event aggregation framework at different
+data centers to aggregate events locally before forwarding to
+the cloud environment. Sparrow event aggregators forwards
+the events to a multi region replicated message queue store
+Google PubSub. With pluggable destination sink, aggregation
+layer can also be conﬁgured to stream events to systems such
+as Kafka on premise or cloud. Events stored in the Google
+PubSub message queue are considered to be ephemeral and
+have a retention of a few days.
+Aggregation framework can be thought of as a scalable in
+memory event stream tunnel. For the majority of the time,
+events are passed between memory buffers across instances
+without persisting to any intermediate storage. Our perfor-
+mance measurements show that the events can be streamed
+to destinations close to network speed. In cases of network or
+system failures, the aggregation framework can dynamically
+choose different path or buffer events locally and replay them
+in the same order as soon as connectivity is resumed.
+
+a) Aggregation guarantee: Events from microservices
+are passed through several network and server hops before
+landing in the persistent PubSub topics. Failure of network and
+servers can cause data loss of events in the event stream. Data
+analytics operating at a very large scale can tolerate minor
+data loss but prefer to have at least once delivery guarantee.
+To support high throughput while guaranteeing at least once
+delivery, the uniﬁed client library batch events and tag a unique
+
+Fig. 4. Event Aggregation
+
+identiﬁer to the payload. Aggregation layer will send back
+an acknowledgement for each unique identiﬁer to the client
+only after it gets a conﬁrmation about event persistence from
+PubSub. Generating a unique identiﬁer and waiting for its
+acknowledgement can be turned on and off for each dataset or
+microservice. This ﬂexibility enables us to conﬁgure delivery
+guarantees with minor latency for only those services which
+really need exactly once delivery.
+
+C. Streaming Event Processing
+
+Events stored in PubSub are categorized into different
+message queue topics identiﬁed by their dataset name. Stream-
+ing Event processor framework is responsible for managing
+thousands of directed acyclic graphs (DAG) of processing
+steps. Each processing step is based on a stream processing
+framework using Apache Beam [20] and Google Dataﬂow
+[21] as the runner. Each dataset has its own stream process-
+ing DAG which is responsible for reading events from its
+topic, applying data transformation before inserting the events
+into downstream analytics stores. Data processing validates
+event contents before converting to different formats based
+on schema supported by analytics stores. Processing DAGs
+are long running stream processing jobs which consume
+events as they arrive in PubSub topics. Since events are
+processed as soon as they land in PubSub topic the latency
+after processing step for each event is still within seconds
+of when it was emitted by micro service. Some processing
+DAGs are conﬁgured to create micro batch event logs on
+Google Cloud Storage. For these datasets we notice end to
+end latency of a few minutes as compared to hours in the past.
+This is acceptable for certain datasets which are consumed
+by applications reading micro batched event logs from object
+stores such as Google Cloud Storage. Stream Event processor
+framework uses an open source software Apache Airﬂow [22]
+to orchestrate and manage DAGs of processors. Individual
+pipeline failures or event processor framework failures are
+automatically re-executed.
+Optionally the processing job also exposes an interface for
+introducing user deﬁned functions (UDF). Twitter engineers
+can implement per event processing logic which is applied
+for each event processed by the DAG processor. Streaming
+
+Event processing framework is responsible for managing user
+code, deploying and invoking it for each event as they are read
+from PubSub topics. UDFs can be chained together which are
+then applied in order to the event stream. Examples of UDFs
+include augmenting events for labeling, schema conversion or
+per ﬁeld processing. The last stage of processing is usually
+streaming insertion to a durable storage such as object store
+(Google Cloud Storage), warehouse (Google BigQuery) or
+stores used for analytics such as (Amplitude and Druid).
+
+D. Streaming or Micro Batch insert
+
+One of the important steps in supporting end to end low
+latency pipelines is the ability to support streaming ingestion
+into durable storage. Sparrow takes advantage of stream-
+ing insertion [23] to Google BigQuery and uses that as a
+time analytics use
+uniﬁed data warehouse to support real
+cases. Google BigQuery exposes both streaming and batch
+insert APIs with the streaming option to be more expensive.
+Streaming processor jobs can be conﬁgured to use either mode
+of insert depending on the dataset. Conﬁguration options can
+be set at the start of the pipeline or dynamically changed
+depending on external triggers such as load or cost. This
+enables us to switch the mode of insert depending on heuristics
+when considering cost vs latency of datasets. Analytical stores
+such as Druid and Amplitude also support data ingestion by
+loading them from durable storage such as Google Cloud
+Storage. In such cases the stream processor DAG jobs can
+create a microbatch of events and write them as object ﬁles at
+regular intervals of 5 or 10 minute windows in a well deﬁned
+path in the object store. Analytical stores continuously scan
+for new ﬁles and load data to make it easy for consumption.
+We noticed an end to end latency of a few minutes on the
+micro batch of the events.
+It should be noted that there were not many analytics supported
+storage systems which exposed streaming insertion APIs. Data
+loading practice was to batch events to an intermediate durable
+storage system and then load that batch. In recent years, this
+has changed and many analytics storage enable streaming
+insert by skipping the need of an intermediate storage system.
+
+IV. USER EXPERIENCE
+
+Data Analytics is an important function which supports
+many features of Twitter platform. Earlier event log pipeline
+has enabled Twitter engineers to answer many important
+questions, but they had to wait for a few hours for the latest
+events. Sparrow has helped reduce this latency and enabled
+near real time analytics. One such example is analyzing user
+behavior on the Twitter platform. Many new features such
+as Twitter Fleets, Twitter spaces and Twitter communities
+are highly personalized and updated frequently depending
+on the user’s interaction with the platform. User behavioral
+events capture important events which are a valuable source
+of information in decision trees for real time updates to the
+respective feature on Twitter. Platform can react in a positive
+way to the user’s action in near real time. Twitter engineers
+can run ad-hoc analytics on both real time and historic data all
+
+in the same query without worrying about setting up separate
+pipelines for real time and historic data processing logic. They
+can ﬁne tune their queries for different time windows based
+on accuracy they desire. Machine learning model quality is
+increased because of the recency and freshness of the events.
+Twitter engineers can inspect events arriving in near real time,
+perform their hypothesis and convert the same ad-hoc queries
+to be executed for a larger time window. Below example
+analytical query shows how Sparrow has enabled near real
+time ad-hoc analytics on minutely granularity as compared to
+hourly time range in the past. In this example our engineers
+can quickly check which client name type is trending recently
+to identify any anomalies for speciﬁc feature access on the
+platform.
+
+A. SQL Query on a dataset generated by Sparrow streaming
+pipeline
+
+SELECT
+e v e n t . c l i e n t N a m e ,
+COUNT( e v e n t . c l i e n t N a m e ) AS c
+FROM
+‘ u s e r b e h a v i o r e v e n t s ‘
+WHERE e v e n t R e c e i v e d T i m e >
+
+TIMESTAMP ADD(CURRENT TIMESTAMP ( ) ,
+INTERVAL −2 MINUTE)
+
+GROUP BY
+e v e n t . c l i e n t N a m e
+ORDER BY c
+DESC LIMIT 10
+
+V. LATENCY
+
+Use cases such as analyzing behavior of user actions has
+turned out
+to be time sensitive and Sparrows latency of
+delivering them in near real time with end to end latency
+of seconds to minutes has unlocked many use cases. While
+designing we also made sure that each component of the
+pipeline is elastic in nature and can individually scale up and
+down depending on the load. This guarantees consistent low
+latency for end Twitter engineers regardless of event spikes
+caused by user actions or viral events on Twitter platform.
+Figure 5 shows how the number of workers in streaming event
+processing DAG increases as the latency of the event increases
+due to load. We can also see that the number of workers slowly
+reduces as the latency returns to expected values.
+
+Latency distribution for datasets managed by Sparrow show
+promising results. In cases of system failures or event load
+changes our system is able to auto heal itself to keep the end
+to end latency distribution low.
+Table 1 shows a sample of latency distribution for a few of the
+datasets managed by Sparrow streaming pipeline. We notice
+that the latency of smaller datasets are usually lower compared
+to larger datasets because of the additional time spent during
+the event aggregation and processing stage. For very small
+datasets with a few thousand events per second, we notice
+end to end latency less than a second. This is because all
+
+VII. MONITORING
+
+Scale and Latency requirements of Sparrow introduce
+unique challenges for monitoring and alerting [25]. Twitter
+Observability [26] and Google Stackdriver [27] has become an
+important and integral part of our framework. Each component
+of the pipeline is instrumented to monitor and accumulate
+many key metrics into Twitters observability systems. Many
+important metrics from Google stackdriver are redirected
+to Twitter observability using connectors. Important metrics
+from clients, aggregation, processing and data ingestion are
+all collected and grouped by dataset. Twitter engineers can
+monitor their own dataset, visualize the rate at which events
+are following from one component
+to others along with
+important elements such as latency, event count, drop rate and
+throughput. Summary metrics are also available for platform
+engineers to monitor and maintain the health of Sparrow
+pipelines. Appropriate alerts are conﬁgured with a threshold
+to notify in case there are anomalies. Some of the metrics
+can also be used as input to heuristics which can trigger
+autoscaling, updating pipelines or throttling certain events to
+provide guaranteed quality of service for different data tiers.
+
+VIII. FAILURE RECOVERY
+
+Our experience has shown that the failure recovery and
+ability to automatically recover pipelines became much more
+important in the Sparrow streaming pipeline than the earlier
+batched pipelines. Batched pipelines have enough buffer time
+to be able to recover from failure. For example, failure in
+the batch aggregation layer for a few minutes can easily be
+absorbed by the pipeline because events are accumulated at
+hourly intervals. Similarly, a failure of batch processing jobs
+can be re-executed before the next batch of events are ready to
+be processed. This ﬂexibility is reduced in streaming pipelines.
+Clients and aggregation framework aim to stream events using
+multiple routes to be able to queue messages to PubSub within
+seconds. Client libraries use a service discovery mechanism to
+dynamically locate backup aggregation service if it receives a
+failure or timeout from its existing connection. Additionally
+different aggregators can scale up and down based on load
+or failure of a few instances independent of each other.
+Processing jobs are also scaled individually based on the load
+of events in the dataset. Failure of a processor job can be re-
+executed independent of other processor DAGs. Re-execution
+of failed pipelines uses more resources to quickly reprocess
+events and not let them accumulate in PubSub. Streaming
+inserts workers can scale up dynamically if there are more
+events to be inserted. All these parameters are tuned based
+on conﬁgured alerts which are triggered based on metrics the
+pipeline components are exporting. Buffering, retry logic and
+elastic scaling, enable us to keep the end to end latency in
+check and not allow events to be left unprocessed for a long
+duration of time at any stage of the pipeline.
+
+IX. CONCLUSION
+
+In conclusion we hope that
+
+this paper has helped our
+readers to explain how we moved our large scale batched
+
+Fig. 5. Processor DAG worker scaling
+
+the components operate at memory speed for a small volume
+of data. Latency of a few minutes is observed for datasets
+which are micro batched at a 5 minute interval. Overall these
+event latencies are much better than waiting for a few hours. It
+should be noted that all the pipelines run independent of other
+datasets because of individual elastic properties per dataset.
+Latency variation of one dataset is not affected by problems
+with another dataset.
+
+TABLE I
+SPARROW EVENT LATENCY DISTRIBUTION
+
+Dataset
+Type
+Dataset 1
+( 10K events per min)
+Dataset 2
+( 500K events per min)
+Dataset 3
+( 10M events per min)
+Dataset 4
+( 20M events per min
+5 minute micro batch)
+
+p90
+0.42 second
+
+Event Latency
+p95
+0.48 second
+
+p99
+0.59 second
+
+2.6 second
+
+2.8 second
+
+8.4 second
+
+22.1 second
+
+29.9 second
+
+67.7 second
+
+6.3 minute
+
+6.5 minute
+
+7.2 minute
+
+VI. TRACER EVENTS
+
+Uniﬁed client libraries can also optionally introduce tracer
+events in between the event stream emitted by the micro
+services. These tracer events capture important statistics such
+as per host event count, event rate, event batch generation
+timestamp and so on. These special events ﬂow through the
+pipeline like any other normal event but can be interpreted by
+different components if needed. For example, the streaming
+event aggregation component can inspect these special events
+and augment it by adding aggregation completion timestamp.
+Similarly, the streaming event processing DAG can add data
+validation metrics to the tracer events. Tracer events carry
+a history of event metadata details which helps us derive
+important metrics such end to end latency, event accept and
+drop rate in real time. Tracer events do not depend on external
+systems such as distributed tracing frameworks [24]. Tracer
+events ﬂow through the Sparrow pipeline like any other event
+and are stored in the same analytic store along with the
+datasets.
+
+[11] L. VijayaRenu, Z. Wang and J. Rottinghuis, ”Scaling Event Aggregation
+at Twitter to Handle Billions of Events per minute,” 2020 IEEE
+Infrastructure Conference, 2020.
+
+[12] Kafka: a Distributed Messaging System for Log Processing by Jay
+
+Kreps, Neha Narkhede, Jun Rao; NetDB workshop ’11, 2011.
+[13] Google PubSub, https://cloud.google.com/pubsub/architecture
+[14] MillWheel: Fault-Tolerant Stream Processing at Internet Scale, Tyler
+Akidau, Alex Balikov, Kaya Bekiroglu, Slava Chernyak, Josh Haberman,
+Reuven Lax, Sam McVeety, Daniel Mills, Paul Nordstrom, Sam Whittle,
+Very Large Data Bases (2013), pp. 734-746
+
+[15] Google BigQuery Technical WP, https://cloud.google.com/
+
+ﬁles/BigQueryTechnicalWP.pdf
+
+[16] Fangjin Yang, Eric Tschetter, Xavier Laut, Nelson Ray, Gian Merlino,
+and Deep Ganguli. 2014. Druid: a real-time analytical data store. In
+Proceedings of the 2014 ACM SIGMOD International Conference on
+Management of Data (SIGMOD ’14).
+
+[17] Google Cloud Storage, https://cloud.google.com/storage
+[18] Amplitude, https://amplitude.com
+[19] Apache Flume, https://ﬂume.apache.org
+[20] Apache Beam, An
+https://beam.apache.org
+
+advanced
+
+uniﬁed
+
+programming model,
+
+[21] Google Dataﬂow, https://cloud.google.com/dataﬂow
+[22] Apache Airﬂow, https://airﬂow.apache.org
+[23] Google
+
+streaming
+
+BigQuery
+
+ingestion,
+
+https://cloud.google.com/bigquery/streaming-data-into-bigquery
+
+[24] Dapper, a Large-Scale Distributed Systems Tracing Infrastructure, Ben-
+jamin H. Sigelman, Luiz Andr Barroso, Mike Burrows, Pat Stephenson,
+Manoj Plakal, Donald Beaver, Saul Jaspan, Chandan Shanbhag Google,
+Inc. (2010)
+
+[25] Byron Ellis. 2014. Real-Time Analytics: Techniques to Analyze and
+
+Visualize Streaming Data (1st. ed.). Wiley Publishing
+[26] Observability at Twitter, https://blog.twitter.com/engineering/
+en us/a/2016/observability-at-twitter-technical-overview-part-i
+[27] Google Stackdriver, https://cloud.google.com/products/operations
+[28] Matthias J. Sax, Guozhang Wang, Matthias Weidlich, and Johann-
+Christoph Freytag. 2018. Streams and Tables: Two Sides of the Same
+Coin. In Proceedings of the International Workshop on Real-Time
+Business Intelligence and Analytics (BIRTE ’18).
+
+event log pipeline to a newer event streaming pipeline. While
+the concepts are not new individually, we had to carefully
+tie together features on individual components and optimize
+each component to accommodate the scale of events ﬂowing
+through our event pipeline. Sparrow streaming pipeline is
+designed using both the on premise and cloud technologies
+while keeping in mind the ease of use requirement for our
+Twitter engineers. There are minimal to no changes for them
+both during event generation as well as event consumption
+phases.
+
+X. FUTURE WORK
+
+Sparrow streaming pipeline is already processing hundreds
+of millions of events per minute for many microservices and
+datasets. We plan to scale this pipeline to accommodate the
+majority of the events generated by micro services at Twitter.
+Per event user deﬁned functions have sparked a lot of interest
+from Twitter engineers. We plan to expand that support and
+introduce generalized functions and expose interfaces similar
+to Kafka streams [28]. We also plan to integrate UDFs with
+Notebooks and enable SQL interface which can provide a way
+to easily inspect event streams in real time before they are
+accumulated into analytical stores.
+
+XI. ACKNOWLEDGMENT
+
+Modernizing our large scale event log pipeline to event
+streaming pipeline has created unique opportunities and use
+cases at Twitter. Much of the foundational infrastructure at
+Twitter has been reused and optimized to build the large-scale
+streaming Sparrow pipeline. We would like to thank multiple
+teams of Data Platform who have contributed to and supported
+this project. We would also like to thank Derek Lyon for
+his management support. Pablo Rodriguez Deﬁno, Prashobh
+Balasundaram, Riya Chakraborthy and Maggie Zhuang for
+their immense engineering help on this project.
+
+REFERENCES
+
+[1] M Hashemi, https://blog.twitter.com/engineering/en us/topics/
+infrastructure/2017/the-infrastructure-behind-twitter-scale
+
+[2] K. Shvachko, H. Kuang, S. Radia and R. Chansler, ”The Hadoop
+Distributed File System,” 2010 IEEE 26th Symposium on Mass Storage
+Systems and Technologies (MSST), 2010.
+
+[3] Arun Kejariwal, Sanjeev Kulkarni, and Karthik Ramasamy. 2015. Real
+time analytics: algorithms and systems. Proc. VLDB Endow. 8, 12
+(August 2015), 20402041
+
+[4] Sanjeev Kulkarni, Nikunj Bhagat, Maosong Fu, Vikas Kedigehalli,
+Christopher Kellogg, Sailesh Mittal, Jignesh M. Patel, Karthik Ra-
+masamy, and Siddarth Taneja. 2015. Twitter Heron: Stream Processing
+at Scale. In Proceedings of the 2015 ACM SIGMOD International
+Conference on Management of Data (SIGMOD ’15).
+
+[5] Yupeng Fu and Chinmay Soman. 2021. Real-time Data Infrastructure at
+Uber. In Proceedings of the 2021 International Conference on Manage-
+ment of Data (SIGMOD/PODS ’21).
+[6] Apache Hadoop, https://hadoop.apache.org
+[7] A. Thusoo et al., ”Hive - a petabyte scale data warehouse using Hadoop,”
+2010 IEEE 26th International Conference on Data Engineering (ICDE
+2010), 2010, pp. 996-1005, doi: 10.1109/ICDE.2010.5447738.
+
+[8] R. Sethi et al., ”Presto: SQL on Everything,” 2019 IEEE 35th Interna-
+tional Conference on Data Engineering (ICDE), 2019, pp. 1802-1813,
+doi: 10.1109/ICDE.2019.00196.
+
+[9] Twitter Scalding, https://github.com/twitter/scalding
+[10] L VijayaRenu, Z Wang. Large Scale Event Log Management @Twitter.
+
+IEEE Infrastructure 2018.
+
+
